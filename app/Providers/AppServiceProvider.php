@@ -10,6 +10,7 @@ use Carbon\CarbonImmutable;
 use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Contracts\View\Factory as ViewFactory;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Pagination\Paginator;
 use Illuminate\Support\Facades\Date;
 use Illuminate\Support\ServiceProvider;
 
@@ -48,5 +49,7 @@ final class AppServiceProvider extends ServiceProvider
 
         // Catch lazy loading, unknown attributes and silently discarded fills during development.
         Model::shouldBeStrict(! $this->app->isProduction());
+
+        Paginator::useBootstrapFive();
     }
 }

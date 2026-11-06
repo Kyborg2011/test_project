@@ -86,7 +86,6 @@ make init
 | `FILES_TTL_MINUTES` | `1440` | Срок жизни файла до автоудаления, минуты (24 часа) |
 | `FILES_PER_PAGE` | `20` | Файлов на странице управления |
 | `FILES_PURGE_BATCH_SIZE` | `100` | Сколько просроченных файлов обрабатывается за один запрос к БД |
-
 | `NOTIFICATION_EMAIL` | `admin@example.com` | Получатель писем об удалении файлов |
 
 Настройки файлов проверяются при старте ([FileSettings](app/Services/Files/FileSettings.php)): некорректное значение (например, `FILES_TTL_MINUTES=0` или расширение без MIME-типов) сразу приводит к понятной ошибке.
@@ -107,33 +106,114 @@ make init
 
 Ответы API: `201` — файл загружен (JSON с данными файла), `422` — ошибка валидации, `413` — запрос больше `HTTP_MAX_BODY_SIZE` (отсекается nginx), `419` — устаревший CSRF-токен.
 
-## Удаление файлов и уведомления
+## Удаление файлов
 
-Ручное и автоматическое удаление идут через один сервис — [FileDeletionService](app/Services/Files/FileDeletionService.php):
+### Жизненный цикл файла
 
-1. В одной транзакции:
-   - запись помечается удалённой (`deleted_at`, `deletion_reason` = `manual` / `expired`) атомарным `UPDATE ... WHERE deleted_at IS NULL`;
-   - в таблицу `outbox_messages` пишется сообщение «отправь письмо» ([transactional outbox](https://microservices.io/patterns/data/transactional-outbox.html)).
-2. После коммита файл удаляется с диска. Ошибка на этом шаге логируется, но удаление не откатывает.
+```
+ загрузка                         expires_at = время загрузки + FILES_TTL_MINUTES
+    │
+    ▼
+┌──────────┐  истёк срок   ┌───────────────────┐  files:purge-expired  ┌─────────┐
+│ доступен ├──────────────►│ истёк, ждёт       ├──────────────────────►│ удалён  │
+└────┬─────┘               │ автоудаления      │  (≤ ~1 мин)           └─────────┘
+     │                     └───────────────────┘                            ▲
+     │  кнопка «Delete» на странице управления                              │
+     └──────────────────────────────────────────────────────────────────────┘
+```
 
-Что это даёт:
-- уведомление не теряется, даже если RabbitMQ недоступен в момент удаления: сообщение ждёт в outbox, его опубликует отдельный процесс;
-- уведомление не уходит, если удаление не состоялось (транзакция откатилась);
-- одновременное удаление одного файла пользователем и автоудалением даёт ровно одно уведомление.
+| Состояние | В БД | Для пользователя |
+|---|---|---|
+| Доступен | `deleted_at IS NULL`, `expires_at > now` | Виден в списке, скачивается, можно удалить |
+| Истёк, ждёт автоудаления | `deleted_at IS NULL`, `expires_at <= now` | Уже не виден и не скачивается; удаляется ближайшим запуском автоудаления |
+| Удалён | `deleted_at`, `deletion_reason` = `manual` / `expired` | Не виден. Файла на диске нет, запись остаётся в БД как история |
 
-### Автоудаление
+### Способы удаления
 
-Контейнер `scheduler` раз в минуту запускает команду `files:purge-expired` ([PurgeExpiredFiles](app/Console/Commands/PurgeExpiredFiles.php)):
-- находит файлы с `expires_at <= now` и удаляет каждый через тот же `FileDeletionService` с причиной `expired`;
+**Вручную.** Страница «Files» (`/files`) → кнопка «Delete» → подтверждение → AJAX-запрос `DELETE /files/{id}`:
+- `200` — файл удалён, строка исчезает из таблицы;
+- `404` — файла нет: уже удалён (например, автоудалением секундой раньше) или срок истёк.
+
+**Автоматически.** Контейнер `scheduler` раз в минуту запускает команду `files:purge-expired` ([PurgeExpiredFiles](app/Console/Commands/PurgeExpiredFiles.php)):
+- находит файлы с `expires_at <= now`, ещё не удалённые;
 - обрабатывает их пачками по `FILES_PURGE_BATCH_SIZE`;
-- ошибка с одним файлом не останавливает остальные, такой файл будет обработан при следующем запуске;
-- запуски не накладываются друг на друга (`withoutOverlapping`).
+- ошибка с одним файлом не останавливает остальные — такой файл будет обработан при следующем запуске;
+- запуски не накладываются друг на друга (`withoutOverlapping`);
+- если scheduler был остановлен, при старте удаляются все накопившиеся просроченные файлы.
 
-Файл удаляется не позже чем примерно через минуту после истечения срока; при этом из списка и для скачивания он недоступен сразу после `expires_at`.
+Запуск вручную: `make artisan c="files:purge-expired"`.
 
-Быстрая проверка: `FILES_TTL_MINUTES=2` в `.env`, загрузить файл, через 2–3 минуты он будет удалён (`make logs` покажет вывод scheduler). Запуск вручную: `make artisan c="files:purge-expired"`. Срок жизни фиксируется при загрузке, поэтому новое значение действует только на новые файлы.
+### Что происходит при удалении
 
-Текст письма — шаблон [resources/views/messages/file-deleted.blade.php](resources/views/messages/file-deleted.blade.php), формат сообщения — в [docs/PLAN.md](docs/PLAN.md#3-контракт-сообщения-rabbitmq).
+Оба способа используют один сервис — [FileDeletionService](app/Services/Files/FileDeletionService.php):
+
+1. **Транзакция в БД:**
+   - запись помечается удалённой атомарным `UPDATE stored_files SET deleted_at = …, deletion_reason = … WHERE id = … AND deleted_at IS NULL`. Если строка уже удалена (обновлено 0 строк), сервис ничего не делает;
+   - в таблицу `outbox_messages` пишется сообщение «отправь письмо» ([transactional outbox](https://microservices.io/patterns/data/transactional-outbox.html)).
+2. **После коммита** файл удаляется с диска.
+3. **Доставка уведомления** (отдельные процессы, см. ниже): `outbox_messages` → RabbitMQ → consumer → письмо.
+
+### Доставка уведомления
+
+```
+outbox_messages ──► outbox:relay ──► exchange "notifications" ──► queue "notifications.email" ──► notifications:consume ──► Laravel Mail
+   (MySQL)          (контейнер relay)        (RabbitMQ, routing key "email.send")                (контейнер consumer)      (MAIL_MAILER=log →
+                                                                                                                           storage/logs/mail.log)
+```
+
+- **Relay** ([RelayOutbox](app/Console/Commands/RelayOutbox.php)) постоянно забирает неотправленные сообщения пачками по `OUTBOX_BATCH_SIZE` и публикует их в RabbitMQ с подтверждением от брокера (publisher confirms). Сообщение помечается отправленным (`published_at`) только после подтверждения. При ошибке публикации — повтор с растущей паузой: `OUTBOX_RETRY_BASE_SECONDS`, ×2 на каждую попытку, не больше `OUTBOX_RETRY_MAX_SECONDS`.
+- **Сообщения и очереди** durable/persistent — переживают перезапуск RabbitMQ.
+- **Consumer** ([ConsumeNotifications](app/Console/Commands/ConsumeNotifications.php)) читает очередь, собирает письмо ([NotificationEmail](app/Mail/NotificationEmail.php)) и отправляет его через Laravel Mail, затем подтверждает сообщение (`ack`). Реальной SMTP-отправки нет: транспорт `log` записывает письмо целиком в `storage/logs/mail.log`. Для SMTP достаточно поменять `MAIL_MAILER` и `MAIL_*` в `.env`.
+- **Дубликаты.** Доставка «как минимум один раз»: в редких сбоях сообщение может быть опубликовано повторно. Consumer отбрасывает уже обработанные `message_id`.
+- **Невалидное сообщение** или ошибка отправки письма — сообщение отклоняется (`reject`) и попадает в очередь `notifications.email.dead` (dead letter queue), где его можно посмотреть в RabbitMQ UI.
+
+Формат сообщения — в [docs/PLAN.md](docs/PLAN.md#3-контракт-сообщения-rabbitmq), текст письма — шаблон [resources/views/messages/file-deleted.blade.php](resources/views/messages/file-deleted.blade.php).
+
+### Гарантии и нештатные ситуации
+
+| Ситуация | Что происходит |
+|---|---|
+| Пользователь и автоудаление удаляют файл одновременно | Удаляет только один; уведомление одно. Второй получает `404` / пропускает файл |
+| RabbitMQ недоступен в момент удаления | Удаление проходит. Сообщение ждёт в `outbox_messages`, relay повторяет публикацию, пока брокер не вернётся |
+| Ошибка БД при удалении (в т. ч. при записи в outbox) | Транзакция откатывается: файл остаётся доступным и на диске, уведомления нет. Пользователь видит ошибку; автоудаление повторит на следующем запуске |
+| Файл не удалось стереть с диска | Удаление не откатывается (файл уже недоступен, уведомление гарантировано). В лог пишется `warning` с путём файла |
+| Файла на диске уже нет | Не ошибка, удаление проходит штатно |
+| Scheduler был остановлен | При старте удаляет все накопившиеся просроченные файлы |
+| Consumer остановлен | Сообщения копятся в очереди RabbitMQ и обрабатываются после запуска |
+| Повторная доставка сообщения | Consumer игнорирует уже обработанный `message_id` |
+
+### Настройки удаления
+
+| Переменная | По умолчанию | Описание |
+|---|---|---|
+| `FILES_TTL_MINUTES` | `1440` | Срок жизни файла, минуты. Фиксируется при загрузке: новое значение действует только на новые файлы |
+| `FILES_PURGE_BATCH_SIZE` | `100` | Размер пачки автоудаления |
+| `NOTIFICATION_EMAIL` | `admin@example.com` | Получатель писем |
+| `OUTBOX_BATCH_SIZE` | `50` | Сколько сообщений relay публикует за один проход |
+| `OUTBOX_POLL_INTERVAL_MS` | `1000` | Пауза relay, когда отправлять нечего |
+| `OUTBOX_RETRY_BASE_SECONDS` / `OUTBOX_RETRY_MAX_SECONDS` | `5` / `300` | Пауза перед повтором неудачной публикации: начальная и максимальная |
+| `RABBITMQ_EXCHANGE`, `RABBITMQ_ROUTING_KEY`, `RABBITMQ_QUEUE` | `notifications`, `email.send`, `notifications.email` | Топология RabbitMQ |
+| `RABBITMQ_DEAD_LETTER_EXCHANGE`, `RABBITMQ_DEAD_LETTER_QUEUE` | `notifications.dlx`, `notifications.email.dead` | Куда попадают отклонённые сообщения |
+| `MAIL_MAILER`, `MAIL_LOG_CHANNEL` | `log`, `mail` | Транспорт писем; при `log` письма пишутся в `storage/logs/mail.log` |
+
+### Как проверить
+
+1. В `.env` поставить `FILES_TTL_MINUTES=2` (вернуть `1440` после проверки).
+2. Загрузить файл на главной странице.
+3. Удалить другой файл вручную на странице «Files».
+4. Через 2–3 минуты:
+   - загруженный файл исчез из списка и из `storage/app/private/uploads`;
+   - в `storage/logs/mail.log` — два письма: «… has been deleted (deleted manually)» и «… (expired)».
+
+### Где смотреть
+
+| Что | Где |
+|---|---|
+| События удаления (`File deleted.`, ошибки) | `storage/logs/laravel.log` |
+| Отправленные письма | `storage/logs/mail.log` |
+| Работа процессов | `make logs` (сервисы `scheduler`, `relay`, `consumer`) |
+| Очереди и сообщения | RabbitMQ UI: http://localhost:15672 → Queues |
+| Неотправленные сообщения | `make artisan c="db:table outbox_messages"` или SQL: `SELECT * FROM outbox_messages WHERE published_at IS NULL` |
 
 ## Code style
 

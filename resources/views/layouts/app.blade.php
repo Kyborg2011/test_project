@@ -16,6 +16,10 @@
                 <a class="nav-link {{ request()->routeIs('upload.*') ? 'active' : '' }}"
                    href="{{ route('upload.create') }}">Upload</a>
             </li>
+            <li class="nav-item">
+                <a class="nav-link {{ request()->routeIs('files.index') ? 'active' : '' }}"
+                   href="{{ route('files.index') }}">Files</a>
+            </li>
         </ul>
     </div>
 </nav>
