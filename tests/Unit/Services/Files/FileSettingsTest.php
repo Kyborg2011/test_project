@@ -70,7 +70,7 @@ final class FileSettingsTest extends TestCase
 
         $this->assertTrue($settings->isAllowed('pdf', 'application/pdf'));
         $this->assertTrue($settings->isAllowed('DOCX', self::DOCX_MIME));
-        $this->assertTrue($settings->isAllowed('docx', 'application/zip'));
+        $this->assertFalse($settings->isAllowed('docx', 'application/zip'));
         $this->assertFalse($settings->isAllowed('pdf', self::DOCX_MIME));
         $this->assertFalse($settings->isAllowed('doc', 'application/msword'));
     }
@@ -122,7 +122,7 @@ final class FileSettingsTest extends TestCase
             'purge_batch_size' => '100',
             'mime_types' => [
                 'pdf' => ['application/pdf'],
-                'docx' => [self::DOCX_MIME, 'application/zip'],
+                'docx' => [self::DOCX_MIME],
             ],
         ], $override);
     }

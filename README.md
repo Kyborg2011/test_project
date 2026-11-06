@@ -89,6 +89,22 @@ make init
 
 Настройки файлов проверяются при старте ([FileSettings](app/Services/Files/FileSettings.php)): некорректное значение (например, `FILES_TTL_MINUTES=0` или расширение без MIME-типов) сразу приводит к понятной ошибке.
 
+## Загрузка файлов
+
+Страница `/`: выбор одного файла, AJAX-отправка (`POST /files`) с прогресс-баром, результат — без перезагрузки страницы.
+
+Проверки на сервере ([UploadFileRequest](app/Http/Requests/UploadFileRequest.php), [AllowedFileType](app/Rules/AllowedFileType.php)):
+- размер — не больше `FILES_MAX_SIZE_KB`;
+- расширение — из `FILES_ALLOWED_EXTENSIONS`;
+- реальный MIME-тип по содержимому файла (libmagic) должен соответствовать расширению: текстовый файл или ZIP, переименованные в `.pdf`/`.docx`, отклоняются.
+
+Хранение ([FileUploadService](app/Services/Files/FileUploadService.php)):
+- файл сохраняется в приватное хранилище (`storage/app/private/uploads`) под случайным именем (UUID), недоступен напрямую по URL;
+- исходное имя очищается (пути, управляющие символы, длина) и хранится в БД;
+- сначала пишется файл, затем запись в БД; если запись в БД не удалась — файл удаляется.
+
+Ответы API: `201` — файл загружен (JSON с данными файла), `422` — ошибка валидации, `413` — запрос больше `HTTP_MAX_BODY_SIZE` (отсекается nginx), `419` — устаревший CSRF-токен.
+
 ## Code style
 
 PSR-12 (Laravel Pint, пресет `psr12`), `declare(strict_types=1)` во всех PHP-файлах, PHPStan level 8 (Larastan).

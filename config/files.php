@@ -25,15 +25,14 @@ return [
     // How many expired files the purge command processes per database query.
     'purge_batch_size' => env('FILES_PURGE_BATCH_SIZE', 100),
 
-    // MIME types (detected from file contents) accepted for each supported extension.
-    // DOCX is a ZIP container, so some libmagic versions report it as a generic ZIP.
+    // MIME types (detected from file contents, not from the name) accepted for each supported extension.
+    // A plain ZIP archive is deliberately not accepted as DOCX.
     'mime_types' => [
         'pdf' => [
             'application/pdf',
         ],
         'docx' => [
             'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-            'application/zip',
         ],
     ],
 ];

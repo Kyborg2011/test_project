@@ -35,8 +35,10 @@ return [
         'local' => [
             'driver' => 'local',
             'root' => storage_path('app/private'),
-            'serve' => true,
-            'throw' => false,
+            // Files are served only through the application controller.
+            'serve' => false,
+            // Fail loudly instead of returning false on write/delete errors.
+            'throw' => true,
             'report' => false,
         ],
 

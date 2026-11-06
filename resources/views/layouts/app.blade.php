@@ -10,9 +10,12 @@
 <body class="bg-body-tertiary">
 <nav class="navbar navbar-expand bg-dark mb-4" data-bs-theme="dark">
     <div class="container">
-        <a class="navbar-brand" href="{{ url('/') }}">{{ config('app.name') }}</a>
+        <a class="navbar-brand" href="{{ route('upload.create') }}">{{ config('app.name') }}</a>
         <ul class="navbar-nav">
-            @stack('nav')
+            <li class="nav-item">
+                <a class="nav-link {{ request()->routeIs('upload.*') ? 'active' : '' }}"
+                   href="{{ route('upload.create') }}">Upload</a>
+            </li>
         </ul>
     </div>
 </nav>
