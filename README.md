@@ -79,6 +79,15 @@ make init
 | `APP_PORT` | `8080` | Порт веб-интерфейса на хосте |
 | `HTTP_MAX_BODY_SIZE` | `12M` | Жёсткий лимит тела запроса для nginx и PHP. Должен быть больше лимита размера файла |
 | `HOST_UID` / `HOST_GID` | `1000` | Пользователь, от которого работают PHP-контейнеры (Makefile подставляет текущего) |
+| `FILES_DISK` | `local` | Диск хранения файлов (`config/filesystems.php`) |
+| `FILES_DIRECTORY` | `uploads` | Каталог внутри диска |
+| `FILES_MAX_SIZE_KB` | `10240` | Максимальный размер одного файла, КБ (10 МБ) |
+| `FILES_ALLOWED_EXTENSIONS` | `pdf,docx` | Допустимые расширения через запятую. Для каждого должны быть описаны MIME-типы в [config/files.php](config/files.php) |
+| `FILES_TTL_MINUTES` | `1440` | Срок жизни файла до автоудаления, минуты (24 часа) |
+| `FILES_PER_PAGE` | `20` | Файлов на странице управления |
+| `FILES_PURGE_BATCH_SIZE` | `100` | Сколько просроченных файлов обрабатывается за один запрос к БД |
+
+Настройки файлов проверяются при старте ([FileSettings](app/Services/Files/FileSettings.php)): некорректное значение (например, `FILES_TTL_MINUTES=0` или расширение без MIME-типов) сразу приводит к понятной ошибке.
 
 ## Code style
 
