@@ -1,0 +1,83 @@
+name: file-storage
+
+x-php: &php
+  build:
+    context: ./docker/php
+    args:
+      UID: ${HOST_UID:-1000}
+      GID: ${HOST_GID:-1000}
+  image: file-storage-php
+  restart: unless-stopped
+  volumes:
+    - ./:/var/www/html:z
+  environment:
+    PHP_UPLOAD_MAX_FILESIZE: ${HTTP_MAX_BODY_SIZE:-12M}
+    PHP_POST_MAX_SIZE: ${HTTP_MAX_BODY_SIZE:-12M}
+  depends_on:
+    mysql:
+      condition: service_healthy
+    rabbitmq:
+      condition: service_healthy
+
+services:
+  nginx:
+    image: nginx:1.28-alpine
+    restart: unless-stopped
+    ports:
+      - "${APP_PORT:-8080}:80"
+    environment:
+      NGINX_CLIENT_MAX_BODY_SIZE: ${HTTP_MAX_BODY_SIZE:-12M}
+    volumes:
+      - ./public:/var/www/html/public:ro,z
+      - ./docker/nginx/templates:/etc/nginx/templates:ro,z
+    depends_on:
+      - app
+
+  # PHP-FPM: serves HTTP requests.
+  app:
+    <<: *php
+
+  # Laravel scheduler: runs periodic commands (expired files purge).
+  scheduler:
+    <<: *php
+    command: ["php", "artisan", "schedule:work"]
+
+  mysql:
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: ${DB_DATABASE:-file_storage}
+      MYSQL_USER: ${DB_USERNAME:-app}
+      MYSQL_PASSWORD: ${DB_PASSWORD:-secret}
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-root}
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ./docker/mysql/init:/docker-entrypoint-initdb.d:ro,z
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+
+  rabbitmq:
+    image: rabbitmq:4.1-management-alpine
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-app}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-secret}
+      RABBITMQ_DEFAULT_VHOST: ${RABBITMQ_VHOST:-/}
+    ports:
+      - "${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 20s
+
+volumes:
+  mysql-data:
+  rabbitmq-data:
