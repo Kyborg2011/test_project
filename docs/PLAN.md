@@ -51,26 +51,30 @@ Exchange `notifications` (direct, durable) → routing key `email.send` → оч
 
 ```json
 {
-  "message_id": "uuid",
+  "message_id": "01a1b251-ca22-738f-abbe-7d7ad5a64e9a",
   "type": "file.deleted",
+  "occurred_at": "2026-11-06T19:24:27+00:00",
   "version": 1,
-  "occurred_at": "2026-11-06T12:00:00+00:00",
   "email": {
     "to": "admin@example.com",
     "subject": "File \"report.pdf\" has been deleted",
-    "body": "..."
+    "body": "Hello,\n\nThe file \"report.pdf\" has been deleted (expired).\n..."
   },
   "payload": {
-    "file_id": 1,
+    "file_id": "01a1b251-bed6-73e8-9068-0cf10a096568",
     "original_name": "report.pdf",
+    "extension": "pdf",
     "mime_type": "application/pdf",
-    "size": 12345,
-    "uploaded_at": "...",
-    "deleted_at": "...",
+    "size": 193,
+    "uploaded_at": "2026-11-06T19:24:24+00:00",
+    "expires_at": "2026-11-07T19:24:24+00:00",
+    "deleted_at": "2026-11-06T19:24:27+00:00",
     "reason": "manual | expired"
   }
 }
 ```
+
+`message_id` — UUIDv7, совпадает с колонкой `outbox_messages.message_id` и передаётся как AMQP-свойство `message_id` (для дедупликации на стороне получателя).
 
 ## 4. Структура проекта
 

@@ -4,9 +4,11 @@ declare(strict_types=1);
 
 namespace App\Providers;
 
+use App\Messaging\Messages\FileDeletedMessageFactory;
 use App\Services\Files\FileSettings;
 use Carbon\CarbonImmutable;
 use Illuminate\Contracts\Foundation\Application;
+use Illuminate\Contracts\View\Factory as ViewFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Date;
 use Illuminate\Support\ServiceProvider;
@@ -22,6 +24,19 @@ final class AppServiceProvider extends ServiceProvider
                 $config = $app->make('config')->get('files', []);
 
                 return FileSettings::fromConfig($config);
+            },
+        );
+
+        $this->app->singleton(
+            FileDeletedMessageFactory::class,
+            static function (Application $app): FileDeletedMessageFactory {
+                $config = $app->make('config');
+
+                return new FileDeletedMessageFactory(
+                    $app->make(ViewFactory::class),
+                    (string) $config->get('notifications.recipient'),
+                    (string) $config->get('app.name'),
+                );
             },
         );
     }
