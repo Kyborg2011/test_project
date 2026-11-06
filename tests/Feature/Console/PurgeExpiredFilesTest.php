@@ -118,10 +118,7 @@ final class PurgeExpiredFilesTest extends TestCase
 
     private function purge(): PendingCommand
     {
-        $command = $this->artisan('files:purge-expired');
-        $this->assertInstanceOf(PendingCommand::class, $command);
-
-        return $command;
+        return $this->command('files:purge-expired');
     }
 
     private function storedFile(CarbonImmutable $expiresAt): StoredFile

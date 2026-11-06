@@ -7,7 +7,7 @@
 - Автоматическое удаление файлов через заданное время (по умолчанию 24 часа).
 - После каждого удаления (ручного или автоматического) в RabbitMQ публикуется сообщение «отправь письмо» на адрес из `.env`.
 
-> Проект в разработке. Ход работы и принятые решения — в [docs/PLAN.md](docs/PLAN.md).
+Принятые решения и их обоснование — в [docs/PLAN.md](docs/PLAN.md), промпты, использованные при разработке, — в [PROMPTS.md](PROMPTS.md).
 
 ## Стек
 
@@ -41,7 +41,8 @@ make init
 
 | Что | Адрес |
 |---|---|
-| Веб-интерфейс | http://localhost:8080 |
+| Загрузка файлов | http://localhost:8080 |
+| Управление файлами | http://localhost:8080/files |
 | RabbitMQ management | http://localhost:15672 (логин/пароль — `RABBITMQ_USER` / `RABBITMQ_PASSWORD`, по умолчанию `app` / `secret`) |
 
 Порты меняются в `.env` (`APP_PORT`, `RABBITMQ_MANAGEMENT_PORT`).
@@ -53,7 +54,7 @@ make init
 | `make up` / `make down` | Запустить / остановить контейнеры |
 | `make ps`, `make logs` | Статус и логи контейнеров |
 | `make shell` | Shell в PHP-контейнере |
-| `make test` | Тесты (PHPUnit, отдельная БД `testing`) |
+| `make test` | Все тесты (PHPUnit, отдельная БД `testing`, интеграционные — с реальным RabbitMQ) |
 | `make lint` / `make fix` | Проверка / исправление code style (PSR-12) |
 | `make analyse` | Статический анализ (PHPStan, level 8) |
 | `make check` | lint + analyse + test |
@@ -66,13 +67,17 @@ make init
 |---|---|
 | `nginx` | HTTP, статика, лимит размера запроса |
 | `app` | PHP-FPM, обработка HTTP-запросов |
-| `scheduler` | Laravel Scheduler (`schedule:work`) — периодические задачи |
+| `scheduler` | Laravel Scheduler (`schedule:work`): раз в минуту запускает автоудаление `files:purge-expired` |
+| `relay` | `outbox:relay` — публикует сообщения из таблицы `outbox_messages` в RabbitMQ |
+| `consumer` | `notifications:consume` — читает очередь, отправляет письма (в `storage/logs/mail.log`) |
 | `mysql` | Основная БД + БД `testing` для тестов |
 | `rabbitmq` | Брокер сообщений |
 
 ## Конфигурация
 
-Все настройки задаются в `.env` (см. комментарии в [.env.example](.env.example)).
+Все настройки задаются в `.env`; полный список с комментариями — в [.env.example](.env.example). Настройки удаления, outbox и RabbitMQ — в разделе [«Настройки удаления»](#настройки-удаления).
+
+Значения проверяются при первом использовании ([FileSettings](app/Services/Files/FileSettings.php), [AmqpSettings](app/Messaging/Amqp/AmqpSettings.php), [OutboxSettings](app/Messaging/OutboxSettings.php)): некорректное значение (например, `FILES_TTL_MINUTES=0`) сразу даёт понятную ошибку.
 
 | Переменная | По умолчанию | Описание |
 |---|---|---|
@@ -87,8 +92,6 @@ make init
 | `FILES_PER_PAGE` | `20` | Файлов на странице управления |
 | `FILES_PURGE_BATCH_SIZE` | `100` | Сколько просроченных файлов обрабатывается за один запрос к БД |
 | `NOTIFICATION_EMAIL` | `admin@example.com` | Получатель писем об удалении файлов |
-
-Настройки файлов проверяются при старте ([FileSettings](app/Services/Files/FileSettings.php)): некорректное значение (например, `FILES_TTL_MINUTES=0` или расширение без MIME-типов) сразу приводит к понятной ошибке.
 
 ## Загрузка файлов
 
@@ -105,6 +108,15 @@ make init
 - сначала пишется файл, затем запись в БД; если запись в БД не удалась — файл удаляется.
 
 Ответы API: `201` — файл загружен (JSON с данными файла), `422` — ошибка валидации, `413` — запрос больше `HTTP_MAX_BODY_SIZE` (отсекается nginx), `419` — устаревший CSRF-токен.
+
+## Управление файлами
+
+Страница `/files`:
+- список доступных файлов (новые сверху) с пагинацией по `FILES_PER_PAGE`: имя, тип, размер, время загрузки, время до удаления (обновляется на странице без перезагрузки);
+- «Download» — скачивание под исходным именем (`GET /files/{id}/download`);
+- «Delete» — удаление с подтверждением (`DELETE /files/{id}`, AJAX).
+
+Удалённые и просроченные файлы недоступны: для них и для несуществующих id возвращается `404`.
 
 ## Удаление файлов
 
@@ -213,7 +225,43 @@ outbox_messages ──► outbox:relay ──► exchange "notifications" ──
 | Отправленные письма | `storage/logs/mail.log` |
 | Работа процессов | `make logs` (сервисы `scheduler`, `relay`, `consumer`) |
 | Очереди и сообщения | RabbitMQ UI: http://localhost:15672 → Queues |
-| Неотправленные сообщения | `make artisan c="db:table outbox_messages"` или SQL: `SELECT * FROM outbox_messages WHERE published_at IS NULL` |
+| Неотправленные сообщения | `docker compose exec mysql mysql -uapp -psecret file_storage -e "SELECT message_id, attempts, available_at, last_error FROM outbox_messages WHERE published_at IS NULL"` |
+
+## Тесты
+
+```bash
+make test
+```
+
+| Набор | Что проверяет |
+|---|---|
+| `tests/Unit` | Чистая логика без БД: валидация настроек, проверка типа файла, очистка имени, формат сообщения, паузы повторов, форматирование размеров и времени |
+| `tests/Feature` | HTTP-сценарии (загрузка, список, скачивание, удаление), сервисы, модели, команды; MySQL (БД `testing`), диск — `Storage::fake()`, брокер — fake-реализация `MessagePublisher` |
+| `tests/Integration` | Реальный RabbitMQ: публикация с подтверждением, unroutable-сообщения, consumer (`ack`, dead letter queue). Использует отдельные очереди со случайным префиксом `test.*` и удаляет их после себя |
+
+Загрузка проверяется на реальных PDF/DOCX из `tests/Fixtures` (MIME определяется по содержимому).
+
+## Структура проекта
+
+```
+app/
+├── Console/Commands/      PurgeExpiredFiles, RelayOutbox, ConsumeNotifications
+├── Enums/                 DeletionReason
+├── Http/                  контроллеры (UploadController, FileController), FormRequest, JSON-ресурс
+├── Mail/                  NotificationEmail
+├── Messaging/             outbox, relay, AMQP (публикация, топология), обработчик писем, формат сообщения
+├── Models/                StoredFile, OutboxMessage
+├── Rules/                 AllowedFileType
+├── Services/Files/        загрузка, удаление, настройки, очистка имени файла
+└── Support/               форматирование размеров и времени, чтение конфигурации
+config/                    files.php, rabbitmq.php, outbox.php, notifications.php
+docker/                    Dockerfile PHP, конфиги nginx/PHP, init-скрипт MySQL
+public/js/                 upload.js, files.js; public/vendor — Bootstrap, jQuery
+resources/views/           страницы, шаблон письма
+tests/                     Unit, Feature, Integration, Fixtures
+```
+
+Бизнес-логика — в сервисах, контроллеры и команды тонкие. Брокер скрыт за интерфейсом `MessagePublisher`, поэтому логика outbox тестируется без RabbitMQ.
 
 ## Code style
 

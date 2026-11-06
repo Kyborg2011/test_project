@@ -42,6 +42,16 @@ services:
     <<: *php
     command: ["php", "artisan", "schedule:work"]
 
+  # Publishes messages from the outbox table to RabbitMQ.
+  relay:
+    <<: *php
+    command: ["php", "artisan", "outbox:relay"]
+
+  # Reads e-mail notifications from RabbitMQ and "sends" them (MAIL_MAILER=log -> storage/logs/mail.log).
+  consumer:
+    <<: *php
+    command: ["php", "artisan", "notifications:consume"]
+
   mysql:
     image: mysql:8.4
     restart: unless-stopped
