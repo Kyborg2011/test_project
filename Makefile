@@ -11,12 +11,14 @@ export HOST_GID ?= $(shell id -g)
 help: ## Show available commands
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  \033[36m%-10s\033[0m %s\n", $$1, $$2}'
 
-init: env build up ## First start: .env, images, containers, dependencies, migrations
+init: env build ## First start: .env, images, dependencies, migrations, then all containers
+	@# Workers (scheduler, relay, consumer) start only after vendor/, APP_KEY and the schema exist.
+	$(DC) up -d app
 	$(PHP) composer install --no-interaction
 	$(PHP) php artisan key:generate --ansi
 	$(PHP) php artisan migrate --force
-	$(DC) restart scheduler
-	@echo "Ready: http://localhost:$$(grep -E '^APP_PORT=' .env | cut -d= -f2)"
+	$(DC) up -d
+	@echo "Ready: http://localhost:$${APP_PORT:-$$(grep -E '^APP_PORT=' .env | cut -d= -f2)}"
 
 env: ## Create .env from .env.example (if missing)
 	@test -f .env || cp .env.example .env
